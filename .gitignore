@@ -1,0 +1,82 @@
+# =============================================================================
+# .gitignore — APQ-Lite (Python / PyTorch)
+# =============================================================================
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# ---- PyTorch / ML artefacts ----
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.tflite
+*.bin
+
+# ---- Data (download via script, do not commit) ----
+data/
+datasets/
+
+# ---- Outputs (generated, do not commit large files) ----
+outputs/
+wandb/
+mlruns/
+lightning_logs/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ---- IDEs & editors ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ---- Testing & coverage ----
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# ---- Mypy / Ruff caches ----
+.mypy_cache/
+.ruff_cache/
+
+# ---- OS ----
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ---- Secrets / credentials ----
+.env
+*.pem
+*.key
+secrets.yaml

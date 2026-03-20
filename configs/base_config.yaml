@@ -1,0 +1,84 @@
+# =============================================================================
+# base_config.yaml — APQ-Lite Global Hyperparameters
+# =============================================================================
+# Controls training, profiling, and evaluation behaviour.
+# Override values via CLI (--config) or environment-specific YAML files.
+
+project:
+  name: "APQ-Lite"
+  version: "0.1.0"
+  seed: 42
+  output_dir: "outputs/"
+  log_dir: "outputs/logs/"
+  checkpoint_dir: "outputs/checkpoints/"
+
+# -----------------------------------------------------------------------------
+# Dataset
+# -----------------------------------------------------------------------------
+data:
+  dataset: "cifar10"           # cifar10 | cifar100 | imagenet
+  data_dir: "data/"
+  num_workers: 4
+  pin_memory: true
+  train_split: 0.9             # fraction of training data used for training
+
+# -----------------------------------------------------------------------------
+# Model
+# -----------------------------------------------------------------------------
+model:
+  architecture: "resnet20"     # resnet20 | mobilenetv2 | vgg11
+  pretrained: false
+  pretrained_path: null        # path to a .pth checkpoint, or null
+
+# -----------------------------------------------------------------------------
+# Training (full-precision baseline + QAT)
+# -----------------------------------------------------------------------------
+training:
+  epochs: 200
+  batch_size: 128
+  optimizer: "sgd"             # sgd | adam | adamw
+  learning_rate: 0.1
+  momentum: 0.9
+  weight_decay: 1.0e-4
+  lr_scheduler: "cosine"       # step | cosine | plateau
+  lr_milestones: [100, 150]    # used when scheduler = "step"
+  lr_gamma: 0.1
+  grad_clip: 5.0               # max gradient norm (0 = disabled)
+  mixed_precision: false       # AMP (fp16) during full-prec training
+
+# -----------------------------------------------------------------------------
+# Profiling  (Stage 1 — sensitivity analysis)
+# -----------------------------------------------------------------------------
+profiling:
+  num_batches: 50              # batches used to accumulate gradient norms
+  batch_size: 32               # can differ from training batch size
+  loss_fn: "cross_entropy"     # loss used to compute gradients for profiling
+  normalize_scores: true       # min-max normalise sensitivity scores to [0,1]
+  output_file: "outputs/sensitivity_scores.json"
+
+# -----------------------------------------------------------------------------
+# Quantization-Aware Training  (Stage 2)
+# -----------------------------------------------------------------------------
+qat:
+  epochs: 30
+  learning_rate: 1.0e-4
+  batch_size: 128
+  warmup_epochs: 5             # linear LR warm-up before cosine decay
+  checkpoint_path: null        # load pretrained fp32 weights before QAT
+
+# -----------------------------------------------------------------------------
+# Evaluation
+# -----------------------------------------------------------------------------
+evaluation:
+  batch_size: 256
+  metrics: ["top1", "top5"]
+  checkpoint_path: null        # model to evaluate
+
+# -----------------------------------------------------------------------------
+# Logging / Monitoring
+# -----------------------------------------------------------------------------
+logging:
+  level: "INFO"                # DEBUG | INFO | WARNING | ERROR
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "apq-lite"

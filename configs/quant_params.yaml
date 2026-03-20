@@ -1,0 +1,67 @@
+# =============================================================================
+# quant_params.yaml — Mixed-Precision Bit-Width Assignment Rules
+# =============================================================================
+# Defines the thresholds and policies used by src/allocator/bit_mapper.py to
+# convert per-layer sensitivity scores into concrete bit-width assignments.
+# These values are passed downstream to src/compiler/mase_integration.py.
+
+# -----------------------------------------------------------------------------
+# Supported bit-widths (must match MASE/CHOP supported precisions)
+# -----------------------------------------------------------------------------
+bit_widths:
+  available: [2, 4, 8]        # candidate precisions, in ascending order
+  weight_default: 8           # fallback if layer is not profiled
+  activation_default: 8
+
+# -----------------------------------------------------------------------------
+# Sensitivity threshold policy
+# Scores are normalised to [0, 1] (1 = most sensitive).
+#
+#   score >= high_threshold  →  8-bit  (preserve accuracy)
+#   score >= mid_threshold   →  4-bit  (balanced)
+#   score <  mid_threshold   →  2-bit  (aggressive compression)
+# -----------------------------------------------------------------------------
+thresholds:
+  high: 0.70
+  mid:  0.35
+
+# -----------------------------------------------------------------------------
+# Layer-type overrides
+# Force specific bit-widths regardless of sensitivity score.
+# Useful for first/last layers which are typically kept at full precision.
+# -----------------------------------------------------------------------------
+layer_overrides:
+  first_layer_bits: 8         # always 8-bit for the stem / first conv
+  last_layer_bits: 8          # always 8-bit for the classifier head
+  skip_layers:                # layer name patterns to leave in fp32
+    - "bn"                    # batch-norm — typically not quantised
+    - "shortcut"
+
+# -----------------------------------------------------------------------------
+# Hardware / memory budget constraints
+# The allocator will warn (not error) if the projected model size exceeds
+# the target_model_size_mb budget.
+# -----------------------------------------------------------------------------
+hardware:
+  target_model_size_mb: 5.0
+  target_bops_reduction: 0.5  # target reduction in bit-operations vs. fp32
+
+# -----------------------------------------------------------------------------
+# Quantization scheme
+# -----------------------------------------------------------------------------
+scheme:
+  weight_quantizer: "symmetric"     # symmetric | asymmetric
+  activation_quantizer: "asymmetric"
+  per_channel_weights: true         # per-channel (true) or per-tensor (false)
+  observer: "minmax"                # minmax | percentile | entropy
+
+# -----------------------------------------------------------------------------
+# MASE / CHOP compiler pass keys
+# These strings must match the argument names expected by the CHOP passes.
+# -----------------------------------------------------------------------------
+mase_keys:
+  weight_width_key: "weight_width"
+  activation_width_key: "data_in_width"
+  weight_frac_key: "weight_frac_width"
+  activation_frac_key: "data_in_frac_width"
+  default_frac_width: 6             # fractional bits = bit_width - 2 (heuristic)

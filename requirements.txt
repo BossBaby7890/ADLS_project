@@ -1,0 +1,35 @@
+# =============================================================================
+# APQ-Lite — Python Dependencies
+# =============================================================================
+# Core training / modelling (MASE env must also satisfy these)
+torch>=2.1.0
+torchvision>=0.16.0
+
+# Configuration
+PyYAML>=6.0
+
+# Experiment tracking
+tensorboard>=2.14.0
+wandb>=0.16.0               # optional; set logging.use_wandb: false to skip
+
+# Export & deployment
+onnx>=1.15.0
+onnxruntime>=1.16.0         # CPU inference verification
+onnxsim>=0.4.33             # optional graph simplification
+
+# Numerical / data utilities
+numpy>=1.24.0
+scipy>=1.11.0               # used for Hessian-related analysis in notebooks
+
+# Notebook / visualisation (VS Code environment)
+jupyter>=1.0.0
+ipywidgets>=8.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+pandas>=2.0.0
+
+# Code quality
+ruff>=0.1.0
+mypy>=1.6.0
+pytest>=7.4.0
+pytest-cov>=4.1.0
