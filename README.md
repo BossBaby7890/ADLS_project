@@ -1,88 +1,110 @@
-# APQ-Lite: 1st-Order Gradient-Aware Mixed-Precision Quantization
+# HA-AdaRound: Hessian-Aware Adaptive Rounding for Mixed-Precision Quantization
 
-A lightweight, research-grade implementation of **automated mixed-precision
-quantization (APQ)** using first-order gradient magnitudes as a cheap proxy
-for the Hessian.  The resulting per-layer bit-width assignments are compiled
-directly into the **MASE/CHOP** hardware compiler for FPGA/ASIC deployment.
+A lightweight, research-grade implementation of **Hessian-Aware AdaRound (HA-AdaRound)** —
+automated mixed-precision quantization that combines first-order gradient sensitivity
+profiling with layer-wise adaptive rounding, compiled directly into the **MASE/CHOP**
+hardware compiler for FPGA/ASIC deployment.
+
+The pipeline avoids full Quantization-Aware Training (QAT). Instead, it uses AdaRound
+to perform layer-wise reconstruction loss minimisation over a small calibration set,
+recovering accuracy at low bit-widths without a fine-tuning training loop.
 
 ---
 
-## System Architecture
+## Pipeline Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         APQ-Lite Pipeline                               │
-│                                                                         │
-│  ┌──────────────┐   JSON    ┌──────────────┐   BitMap  ┌─────────────┐ │
-│  │  Stage 1     │ ────────► │  Stage 2     │ ────────► │  Stage 3    │ │
-│  │  Profiler    │           │  Allocator   │           │  Compiler   │ │
-│  │              │           │              │           │             │ │
-│  │ Gradient     │           │ Threshold-   │           │ MASE/CHOP   │ │
-│  │ sensitivity  │           │ based        │           │ config      │ │
-│  │ (||∇W||²)   │           │ bit-width    │           │ generation  │ │
-│  │              │           │ assignment   │           │             │ │
-│  └──────────────┘           └──────────────┘           └──────┬──────┘ │
-│         ▲                                                      │        │
-│         │                                              CHOP    │        │
-│  ┌──────┴──────┐                                   pass cfg   │        │
-│  │  Models     │◄──────────────────────────────────────────────┘        │
-│  │  ResNet20   │                                                        │
-│  │  MobileNet  │   ┌──────────────┐        ┌──────────────────────────┐ │
-│  │  …          │──►│  Stage 4     │──────► │  Stage 5                 │ │
-│  └─────────────┘   │  Engine      │        │  ONNX Export             │ │
-│                    │              │        │  (MASE HLS / TVM target) │ │
-│                    │  fp32 train  │        └──────────────────────────┘ │
-│                    │  + QAT loop  │                                      │
-│                    └──────────────┘                                      │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        HA-AdaRound Pipeline                                  │
+│                                                                              │
+│  ┌─────────────┐  JSON   ┌─────────────┐  BitMap  ┌──────────────────────┐  │
+│  │  Stage 1    │ ──────► │  Stage 2    │ ───────► │  Stage 2.5           │  │
+│  │  Profiler   │         │  Allocator  │          │  AdaRound            │  │
+│  │             │         │             │          │                      │  │
+│  │ E[||∇W||²]  │         │ Threshold   │          │ Layer-wise learned   │  │
+│  │ per layer   │         │ → {2,4,8}   │          │ rounding via V       │  │
+│  │ (Hessian    │         │ -bit/layer  │          │ min ||Wx-Ŵ(V)x||²_F  │  │
+│  │  proxy)     │         │             │          │ + β-annealing reg.   │  │
+│  └─────────────┘         └─────────────┘          └──────────┬───────────┘  │
+│         ▲                                                     │              │
+│         │                                          rounded    │              │
+│  ┌──────┴──────┐                                  weights     ▼              │
+│  │  Models     │                         ┌──────────────────────────────┐   │
+│  │  ResNet20   │                         │  Stage 3                     │   │
+│  │  ResNet32   │                         │  MASE/CHOP Compiler          │   │
+│  │  ResNet56   │                         │                              │   │
+│  └──────┬──────┘                         │  MaseConfigGenerator →       │   │
+│         │                                │  quantize_transform_pass     │   │
+│         │                                │  → checkpoint_quantized.pth  │   │
+│         │                                │  → quant_config.json         │   │
+│         │                                └──────────────┬───────────────┘   │
+│         │                                               │                   │
+│         └───────────────────────────────────────────────┤                   │
+│                                                         ▼                   │
+│                                              ┌──────────────────────┐       │
+│                                              │  Stage 4             │       │
+│                                              │  ONNX Export         │       │
+│                                              │  (MASE HLS / TVM)    │       │
+│                                              └──────────────────────┘       │
+└──────────────────────────────────────────────────────────────────────────────┘
 
-          MASE Terminal  ◄──────────────────────  VS Code
-          (profiling,                            (analysis,
-           QAT, export)                          notebooks)
+          MASE Terminal  ◄──────────────────────────  VS Code
+          (profiling,                                (analysis,
+           AdaRound,                                 notebooks)
+           export)
 ```
 
 ### Module Descriptions
 
 | Module | File | Role |
 |---|---|---|
-| **Profiler** | `src/profiler/sensitivity.py` | Accumulates `‖∇W‖²` over a calibration set to score each layer's sensitivity to quantization. Acts as a 1st-order Hessian proxy (HAWQ-lite). |
-| **Allocator** | `src/allocator/bit_mapper.py` | Applies threshold policy to sensitivity scores to assign `{2, 4, 8}`-bit widths per layer. Respects first/last layer overrides and hardware budget. |
+| **Profiler** | `src/profiler/sensitivity.py` | Accumulates `E[‖∇W‖²]` over a calibration set to score each layer's sensitivity to quantization. Acts as a 1st-order Hessian proxy (HAWQ-lite). |
+| **Allocator** | `src/allocator/bit_mapper.py` | Applies threshold policy to sensitivity scores to assign `{2, 4, 8}`-bit widths per layer. Respects first/last-layer overrides and hardware budget. |
+| **AdaRound** | `src/quantization/adaround.py` | Layer-wise adaptive rounding. For each layer, optimises continuous rounding variables `V` to minimise `‖Wx − Ŵ(V)x‖²_F + λ·R_β(V)` over a small calibration batch. Replaces QAT. |
 | **Compiler** | `src/compiler/mase_integration.py` | Translates the bit-map into a MASE/CHOP `quantization_config` dict (weight/activation widths + fractional bits). Wraps it for `quantize_transform_pass`. |
 | **Models** | `src/models/` | Registerable architecture zoo (ResNet-20/32/56). Consistent naming enables the profiler and allocator to match layers across stages. |
-| **Engine** | `src/engine/trainer.py` | Unified fp32 pre-training and QAT fine-tuning loop with AMP, grad-clip, and checkpoint management. |
-| **Engine** | `src/engine/evaluator.py` | Top-1/5 accuracy, cross-entropy loss, throughput, and latency benchmarking. Serialises results for notebook analysis. |
+| **Evaluator** | `src/engine/evaluator.py` | Top-1/5 accuracy, cross-entropy loss, throughput, and latency benchmarking. Serialises results for notebook analysis. |
 
 ---
 
 ## Repository Structure
 
 ```
-APQ-Lite/
+HA-AdaRound/
 ├── configs/
-│   ├── base_config.yaml        # Global hyperparameters
-│   └── quant_params.yaml       # Bit-width thresholds & MASE keys
+│   ├── base_config.yaml        # Global hyperparameters (data, model, profiling, eval)
+│   └── quant_params.yaml       # Bit-width thresholds, layer overrides & MASE keys
 │
 ├── src/
 │   ├── profiler/
 │   │   └── sensitivity.py      # Stage 1 — gradient norm profiling
 │   ├── allocator/
-│   │   └── bit_mapper.py       # Stage 2 — sensitivity → bit-width
+│   │   └── bit_mapper.py       # Stage 2 — sensitivity → bit-width assignment
+│   ├── quantization/
+│   │   └── adaround.py         # Stage 2.5 — adaptive rounding optimiser
 │   ├── compiler/
 │   │   └── mase_integration.py # Stage 3 — CHOP config generation
 │   ├── models/
-│   │   ├── __init__.py         # Model registry
-│   │   └── resnet.py           # ResNet-20/32/56 for CIFAR
+│   │   ├── __init__.py         # Model registry + build_model()
+│   │   └── resnet.py           # ResNet-20/32/56 for CIFAR-10/100
 │   └── engine/
-│       ├── trainer.py          # fp32 + QAT training loop
 │       └── evaluator.py        # Accuracy & latency evaluation
 │
 ├── scripts/                    # Run from MASE terminal
 │   ├── run_profiling.py        # Stage 1 entry-point
-│   ├── run_qat.py              # Stage 2 + 3 + QAT entry-point
-│   └── export_onnx.py          # ONNX export entry-point
+│   ├── run_qat.py              # Stage 2 + 2.5 + 3 entry-point
+│   └── export_onnx.py          # Stage 4 — ONNX export entry-point
 │
 ├── notebooks/
 │   └── Results_Visualization.ipynb  # VS Code analysis
+│
+├── outputs/                    # Generated at runtime (gitignored)
+│   ├── sensitivity_scores.json      # Raw per-parameter scores (Stage 1)
+│   ├── layer_sensitivity.json       # Module-level scores (Stage 1)
+│   ├── quant_config.json            # CHOP pass config (Stage 3)
+│   └── checkpoints/
+│       ├── checkpoint_best.pth      # fp32 pretrained weights (Stage 1 input)
+│       └── checkpoint_quantized.pth # AdaRounded + MASE-quantized (Stage 4 input)
 │
 ├── requirements.txt
 ├── .gitignore
@@ -99,15 +121,25 @@ APQ-Lite/
 pip install -r requirements.txt
 ```
 
-### 2. Pre-train the fp32 baseline (MASE terminal)
+### 2. Run sensitivity profiling — Stage 1 (MASE terminal)
+
+Profiles the fp32 model to produce per-layer sensitivity scores.
 
 ```bash
-python scripts/run_profiling.py --config configs/base_config.yaml
+python scripts/run_profiling.py \
+    --config     configs/base_config.yaml \
+    --quant      configs/quant_params.yaml \
+    --checkpoint outputs/checkpoints/checkpoint_best.pth
 ```
 
-> **Note:** Load a pretrained checkpoint with `--checkpoint` to skip training.
+Outputs:
+- `outputs/layer_sensitivity.json` — module-level sensitivity scores
 
-### 3. Run QAT with mixed-precision allocation (MASE terminal)
+### 3. Run AdaRound with mixed-precision allocation — Stages 2 / 2.5 / 3 (MASE terminal)
+
+Assigns bit-widths from sensitivity scores (Stage 2), runs layer-wise adaptive
+rounding over a calibration batch (Stage 2.5), generates the CHOP config and
+applies `quantize_transform_pass` to produce the final quantized model (Stage 3).
 
 ```bash
 python scripts/run_qat.py \
@@ -117,20 +149,39 @@ python scripts/run_qat.py \
     --pretrained  outputs/checkpoints/checkpoint_best.pth
 ```
 
-### 4. Export to ONNX (MASE terminal)
+**AdaRound options:**
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--adaround-steps` | `500` | Optimisation steps per layer (paper: 10 000) |
+| `--calib-batches` | `1` | Calibration batches used per layer |
+| `--skip-adaround` | off | Skip to RTN rounding (faster, lower accuracy) |
+
+Outputs:
+- `outputs/quant_config.json` — CHOP quantization pass config
+- `outputs/checkpoints/checkpoint_quantized.pth` — AdaRounded + MASE-quantized weights
+
+### 4. Export to ONNX — Stage 4 (MASE terminal)
+
+Reloads the quantized checkpoint, re-applies the CHOP pass to restore the
+quantized graph structure, then exports to ONNX.
 
 ```bash
 python scripts/export_onnx.py \
     --config     configs/base_config.yaml \
-    --checkpoint outputs/checkpoints/checkpoint_best.pth \
+    --quant      configs/quant_params.yaml \
+    --checkpoint outputs/checkpoints/checkpoint_quantized.pth \
     --output     outputs/model_quantized.onnx
 ```
 
+Outputs:
+- `outputs/model_quantized.onnx` — quantized graph ready for MASE HLS / TVM
+
 ### 5. Analyse results (VS Code)
 
-Open `notebooks/Results_Visualization.ipynb` to compare baseline vs.
-quantized accuracy, visualise per-layer bit-width assignments, and plot
-the sensitivity score distribution.
+Open `notebooks/Results_Visualization.ipynb` to compare baseline vs. quantized
+accuracy, visualise per-layer bit-width assignments, and plot the sensitivity
+score distribution.
 
 ---
 
@@ -138,10 +189,34 @@ the sensitivity score distribution.
 
 All behaviour is controlled via two YAML files:
 
-- **`configs/base_config.yaml`** — dataset, model, training hyperparameters,
-  profiling settings, QAT epochs, logging.
-- **`configs/quant_params.yaml`** — sensitivity thresholds, available
-  bit-widths, layer overrides, hardware budget, MASE key names.
+**`configs/base_config.yaml`** — dataset path, model architecture, fp32 training
+hyperparameters, profiling settings, evaluation batch size, logging.
+
+**`configs/quant_params.yaml`** — sensitivity thresholds for `{2, 4, 8}`-bit
+assignment, first/last-layer overrides, hardware budget targets, MASE/CHOP
+compiler key names.
+
+Key sections:
+
+```yaml
+# base_config.yaml
+data:
+  batch_size: 128          # dataloader batch size (used for AdaRound calibration)
+
+profiling:
+  num_batches: 50          # calibration batches for gradient norm accumulation
+```
+
+```yaml
+# quant_params.yaml
+thresholds:
+  high: 0.70               # score >= high  →  8-bit
+  mid:  0.35               # score >= mid   →  4-bit  (else 2-bit)
+
+layer_overrides:
+  first_layer_bits: 8      # always 8-bit for stem
+  last_layer_bits: 8       # always 8-bit for classifier head
+```
 
 ---
 
@@ -150,4 +225,5 @@ All behaviour is controlled via two YAML files:
 - **HAWQ**: Dong et al., *"HAWQ: Hessian AWare Quantization of Neural Networks with Mixed-Precision"*, ICCV 2019.
 - **HAWQ-V2**: Dong et al., *"HAWQ-V2: Hessian Aware trace-Weighted Quantization of Neural Networks"*, NeurIPS 2020.
 - **APQ**: Wang et al., *"APQ: Joint Search for Network Architecture, Pruning and Quantization Policy"*, CVPR 2020.
+- **AdaRound**: Nagel et al., *"Up or Down? Adaptive Rounding for Post-Training Quantization"*, ICML 2020.
 - **MASE**: *Machine-Learning Accelerator System Exploration* framework — [github.com/DeepWok/mase](https://github.com/DeepWok/mase).
