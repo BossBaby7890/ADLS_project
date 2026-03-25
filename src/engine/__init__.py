@@ -1,6 +1,6 @@
-"""src.engine — Training and evaluation loops for APQ-Lite experiments."""
+"""src.engine — Evaluation loop for APQ-Lite experiments."""
 
-from .trainer import Trainer
+# QAT removed — Trainer removed with it; AdaRound handles post-quantization error correction
 from .evaluator import Evaluator
 
-__all__ = ["Trainer", "Evaluator"]
+__all__ = ["Evaluator"]
