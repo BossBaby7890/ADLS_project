@@ -21,6 +21,7 @@ data:
   num_workers: 4
   pin_memory: true
   train_split: 0.9             # fraction of training data used for training
+  batch_size: 128              # dataloader batch size (used for AdaRound calibration)
 
 # -----------------------------------------------------------------------------
 # Model
@@ -31,7 +32,7 @@ model:
   pretrained_path: null        # path to a .pth checkpoint, or null
 
 # -----------------------------------------------------------------------------
-# Training (full-precision baseline + QAT)
+# Training (full-precision baseline)
 # -----------------------------------------------------------------------------
 training:
   epochs: 200
@@ -56,15 +57,7 @@ profiling:
   normalize_scores: true       # min-max normalise sensitivity scores to [0,1]
   output_file: "outputs/sensitivity_scores.json"
 
-# -----------------------------------------------------------------------------
-# Quantization-Aware Training  (Stage 2)
-# -----------------------------------------------------------------------------
-qat:
-  epochs: 30
-  learning_rate: 1.0e-4
-  batch_size: 128
-  warmup_epochs: 5             # linear LR warm-up before cosine decay
-  checkpoint_path: null        # load pretrained fp32 weights before QAT
+# QAT removed — AdaRound handles post-quantization error correction
 
 # -----------------------------------------------------------------------------
 # Evaluation
