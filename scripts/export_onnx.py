@@ -4,8 +4,23 @@ scripts/export_onnx.py
 ======================
 Entry-point for **Stage 4**: ONNX Export for Hardware Deployment.
 
-Loads the QAT-trained (or converted) model and exports it to ONNX format,
-optionally running a basic shape-correctness check via ``onnxruntime``.
+Loads the AdaRounded + CHOP-quantized model produced by ``run_qat.py``
+(Stage 3) and exports it to ONNX format, optionally running a basic
+shape-correctness check via ``onnxruntime``.
+
+Pipeline position
+-----------------
+This script is the final stage of the HA-AdaRound pipeline:
+
+    run_profiling.py   →  outputs/layer_sensitivity.json       (Stage 1)
+    run_qat.py         →  outputs/checkpoints/checkpoint_quantized.pth
+                          outputs/quant_config.json             (Stage 2/2.5/3)
+    export_onnx.py     →  outputs/model_quantized.onnx          (Stage 4)
+
+To reconstruct the correct quantized graph, this script requires both the
+saved checkpoint (model weights) and the quant config (CHOP pass config).
+It rebuilds the MaseGraph and re-applies ``quantize_transform_pass`` before
+exporting, ensuring the exported graph matches what Stage 3 produced.
 
 The exported ``.onnx`` file can be:
   - Fed into ``onnxsim`` for graph simplification.
@@ -14,10 +29,11 @@ The exported ``.onnx`` file can be:
 
 Usage
 -----
-    python scripts/export_onnx.py --config configs/base_config.yaml \\
-                                   --checkpoint outputs/checkpoints/checkpoint_best.pth \\
-                                   --output    outputs/model_quantized.onnx \\
-                                   --opset     17
+    python scripts/export_onnx.py --config  configs/base_config.yaml \\
+                                   --quant   configs/quant_params.yaml \\
+                                   --checkpoint outputs/checkpoints/checkpoint_quantized.pth \\
+                                   --output     outputs/model_quantized.onnx \\
+                                   --opset      17
 """
 
 from __future__ import annotations
@@ -32,6 +48,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.compiler import MaseConfigGenerator
 from src.models import build_model
 
 logging.basicConfig(
@@ -77,12 +94,14 @@ def verify_onnx(onnx_path: str, dummy_input_shape: tuple) -> bool:
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="APQ-Lite — ONNX Export")
+    parser = argparse.ArgumentParser(description="APQ-Lite — Stage 4: ONNX Export")
     parser.add_argument("--config", default="configs/base_config.yaml")
+    parser.add_argument("--quant", default="configs/quant_params.yaml",
+                        help="Quant params YAML — used to reconstruct the CHOP pass config.")
     parser.add_argument(
         "--checkpoint",
-        required=True,
-        help="Path to the trained model checkpoint (.pth).",
+        default="outputs/checkpoints/checkpoint_quantized.pth",
+        help="Quantized checkpoint produced by run_qat.py (Stage 3).",
     )
     parser.add_argument(
         "--output",
@@ -107,11 +126,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    quant_cfg = load_config(args.quant)
 
     device = torch.device(args.device)
     logger.info("Export device: %s", device)
 
-    # ---- Build and load model ----
+    # ---- Build base model and load AdaRounded + quantized weights ----
     num_classes = 10 if cfg["data"]["dataset"] == "cifar10" else 100
     model = build_model(cfg["model"]["architecture"], num_classes=num_classes)
 
@@ -119,6 +139,35 @@ def main() -> None:
     model.load_state_dict(state.get("model_state_dict", state))
     model.to(device).eval()
     logger.info("Checkpoint loaded from %s", args.checkpoint)
+
+    # ---- Reconstruct the CHOP quant config and re-apply MASE pass ----
+    # The checkpoint holds the weight values but the quantized graph structure
+    # (integer operators, scale/zero-point metadata) is only restored by
+    # re-applying quantize_transform_pass with the same config used in Stage 3.
+    from chop.passes.graph.transforms import quantize_transform_pass
+    from chop import MaseGraph
+
+    mk = quant_cfg["mase_keys"]
+    generator = MaseConfigGenerator(
+        weight_width_key=mk["weight_width_key"],
+        activation_width_key=mk["activation_width_key"],
+        weight_frac_key=mk["weight_frac_key"],
+        activation_frac_key=mk["activation_frac_key"],
+        default_frac_width=mk["default_frac_width"],
+    )
+
+    # Load the quant_config.json written by run_qat.py rather than
+    # regenerating from scratch — ensures bit_map is identical to Stage 3.
+    quant_config_path = Path(cfg["project"]["output_dir"]) / "quant_config.json"
+    chop_config = generator.load(quant_config_path)
+    mase_pass_config = generator.wrap_for_mase_pass(chop_config)
+    logger.info("Loaded CHOP quant config from %s", quant_config_path)
+
+    mg = MaseGraph(model)
+    mg, _ = quantize_transform_pass(mg, mase_pass_config)
+    model = mg.model
+    model.eval()
+    logger.info("CHOP quantize_transform_pass re-applied.")
 
     # ---- Dummy input ----
     batch_size = 1
