@@ -61,6 +61,8 @@ recovering accuracy at low bit-widths without a fine-tuning training loop.
 | **Profiler** | `src/profiler/sensitivity.py` | Accumulates `E[‖∇W‖²]` over a calibration set to score each layer's sensitivity to quantization. Acts as a 1st-order Hessian proxy (HAWQ-lite). |
 | **Allocator** | `src/allocator/bit_mapper.py` | Applies threshold policy to sensitivity scores to assign `{2, 4, 8}`-bit widths per layer. Respects first/last-layer overrides and hardware budget. |
 | **AdaRound** | `src/quantization/adaround.py` | Layer-wise adaptive rounding. For each layer, optimises continuous rounding variables `V` to minimise `‖Wx − Ŵ(V)x‖²_F + λ·R_β(V)` over a small calibration batch. Replaces QAT. |
+| **Adaptive Scheduler** | `src/quantization/adaptive_scheduler.py` | Allocates layer-wise AdaRound optimisation budgets based on assigned bit-width and sensitivity score. More sensitive / lower-bit layers receive more reconstruction effort. |
+| **Bit Refiner** | `src/refinement/bit_refiner.py` | Post-allocation refinement stage that upgrades a small number of highly sensitive 2-bit layers to 4-bit before AdaRound, improving robustness without replacing the baseline allocator. |
 | **Compiler** | `src/compiler/mase_integration.py` | Translates the bit-map into a MASE/CHOP `quantization_config` dict (weight/activation widths + fractional bits). Wraps it for `quantize_transform_pass`. |
 | **Models** | `src/models/` | Registerable architecture zoo (ResNet-20/32/56). Consistent naming enables the profiler and allocator to match layers across stages. |
 | **Evaluator** | `src/engine/evaluator.py` | Top-1/5 accuracy, cross-entropy loss, throughput, and latency benchmarking. Serialises results for notebook analysis. |
@@ -161,6 +163,42 @@ Outputs:
 - `outputs/quant_config.json` — CHOP quantization pass config
 - `outputs/checkpoints/checkpoint_quantized.pth` — AdaRounded + MASE-quantized weights
 
+### 3b. Run adaptive AdaRound scheduling (enhanced Stage 2.5 / 2.6)
+
+This variant keeps the original bit-width allocation stage unchanged, but allocates
+different AdaRound optimisation budgets to different layers based on:
+
+- assigned bit-width
+- sensitivity score
+
+Lower-bit and more sensitive layers receive more reconstruction effort.
+
+```bash
+python scripts/run_enhanced_qat.py \
+    --config      configs/base_config.yaml \
+    --quant       configs/quant_params.yaml \
+    --sensitivity outputs/layer_sensitivity.json \
+    --pretrained  outputs/checkpoints/checkpoint_best.pth \
+    --adaround-steps 500 \
+    --calib-batches 1
+
+### 3c. Run bit-refined + adaptive AdaRound pipeline (enhanced Stage 2 / 2.2 / 2.5 / 2.6 / 3)
+
+This variant adds a lightweight post-allocation refinement stage before AdaRound.
+Starting from the threshold-based mixed-precision bit-map, it upgrades a small number
+of highly sensitive 2-bit layers to 4-bit, then runs adaptive AdaRound scheduling.
+
+```bash
+python scripts/run_refined_enhanced_qat.py \
+    --config      configs/base_config.yaml \
+    --quant       configs/quant_params.yaml \
+    --sensitivity outputs/layer_sensitivity.json \
+    --pretrained  outputs/checkpoints/checkpoint_best.pth \
+    --adaround-steps 500 \
+    --calib-batches 1 \
+    --max-rescues 3 \
+    --min-rescue-sensitivity 0.05
+
 ### 4. Export to ONNX — Stage 4 (MASE terminal)
 
 Reloads the quantized checkpoint, re-applies the CHOP pass to restore the
@@ -219,6 +257,17 @@ layer_overrides:
 ```
 
 ---
+
+Then, later, **just before `## References`**, add this:
+
+```md
+## Environment Notes
+
+### Checkpoint requirement
+For meaningful quantization experiments, the pipeline expects a pretrained fp32 checkpoint at:
+
+```text
+outputs/checkpoints/checkpoint_best.pth
 
 ## References
 
