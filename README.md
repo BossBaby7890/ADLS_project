@@ -258,8 +258,6 @@ layer_overrides:
 
 ---
 
-Then, later, **just before `## References`**, add this:
-
 ```md
 ## Environment Notes
 
