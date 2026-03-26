@@ -276,6 +276,19 @@ def parse_args() -> argparse.Namespace:
         help="Number of calibration batches to collect for AdaRound (default: 1).",
     )
 
+    # Debug / sanity-check mode
+    parser.add_argument(
+        "--force-bits",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Bypass sensitivity profiling and assign N bits to every layer. "
+            "Skips the allocator and ignores --sensitivity. "
+            "Example: --force-bits 8  (useful for debugging accuracy.)"
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -288,26 +301,6 @@ def main() -> None:
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    # ---- Load sensitivity scores ----
-    with open(args.sensitivity) as fh:
-        sensitivity_scores: dict = json.load(fh)
-    logger.info("Loaded sensitivity scores for %d layers.", len(sensitivity_scores))
-
-    # ---- Stage 2: Bit-Width Allocation ----
-    th = quant_cfg["thresholds"]
-    lo = quant_cfg["layer_overrides"]
-    allocator = BitWidthAllocator(
-        available_bits=quant_cfg["bit_widths"]["available"],
-        high_threshold=th["high"],
-        mid_threshold=th["mid"],
-        first_layer_bits=lo["first_layer_bits"],
-        last_layer_bits=lo["last_layer_bits"],
-        skip_patterns=lo["skip_layers"],
-        weight_default=quant_cfg["bit_widths"]["weight_default"],
-        activation_default=quant_cfg["bit_widths"]["activation_default"],
-    )
-    bit_map = allocator.allocate(sensitivity_scores)
-
     # ---- Build model (needed before AdaRound) ----
     num_classes = 10 if cfg["data"]["dataset"] == "cifar10" else 100
     model = build_model(cfg["model"]["architecture"], num_classes=num_classes)
@@ -319,6 +312,39 @@ def main() -> None:
         logger.info("Loaded pretrained weights from %s", pretrained)
 
     model = model.to(device)
+
+    # ---- Stage 2: Bit-Width Allocation ----
+    if args.force_bits is not None:
+        logger.info(
+            "DEBUG --force-bits %d: bypassing allocator, assigning %d-bit to all "
+            "weight-bearing layers (sensitivity file ignored).",
+            args.force_bits, args.force_bits,
+        )
+        bit_map = {
+            name: {"weight_bits": args.force_bits, "activation_bits": args.force_bits}
+            for name, module in model.named_modules()
+            if hasattr(module, "weight") and module.weight is not None
+        }
+        logger.info("force-bits bit_map: %d layers assigned %d-bit.", len(bit_map), args.force_bits)
+    else:
+        # Load sensitivity scores produced by run_profiling.py
+        with open(args.sensitivity) as fh:
+            sensitivity_scores: dict = json.load(fh)
+        logger.info("Loaded sensitivity scores for %d layers.", len(sensitivity_scores))
+
+        th = quant_cfg["thresholds"]
+        lo = quant_cfg["layer_overrides"]
+        allocator = BitWidthAllocator(
+            available_bits=quant_cfg["bit_widths"]["available"],
+            high_threshold=th["high"],
+            mid_threshold=th["mid"],
+            first_layer_bits=lo["first_layer_bits"],
+            last_layer_bits=lo["last_layer_bits"],
+            skip_patterns=lo["skip_layers"],
+            weight_default=quant_cfg["bit_widths"]["weight_default"],
+            activation_default=quant_cfg["bit_widths"]["activation_default"],
+        )
+        bit_map = allocator.allocate(sensitivity_scores)
 
     # ---- Build dataloader (needed for AdaRound calibration) ----
     train_loader = build_dataloaders(cfg)
