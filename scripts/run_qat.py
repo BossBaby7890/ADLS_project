@@ -363,10 +363,26 @@ def main() -> None:
     # Converts the AdaRounded fp32 model into a quantized MASE graph where
     # each layer is replaced with its integer-arithmetic equivalent according
     # to mase_pass_config.
+    #
+    # The two analysis passes MUST run before quantize_transform_pass.
+    # They populate node.meta["mase"] with op-type, shape, and software
+    # metadata that quantize_transform_pass reads on every node.
+    # Skipping them causes KeyError: 'mase'.
     from chop.passes.graph.transforms import quantize_transform_pass
+    from chop.passes.graph.analysis import (
+        init_metadata_analysis_pass,
+        add_common_metadata_analysis_pass,
+        add_software_metadata_analysis_pass,
+    )
     from chop import MaseGraph
 
+    # Dummy input used by add_common_metadata_analysis_pass to trace shapes
+    dummy_input = {"x": torch.randn(1, 3, 32, 32, device=device)}
+
     mg = MaseGraph(model)
+    mg, _ = init_metadata_analysis_pass(mg)
+    mg, _ = add_common_metadata_analysis_pass(mg, pass_args={"dummy_in": dummy_input})
+    mg, _ = add_software_metadata_analysis_pass(mg, pass_args={})
     mg, _ = quantize_transform_pass(mg, mase_pass_config)
     model = mg.model
     logger.info("CHOP quantize_transform_pass applied.")

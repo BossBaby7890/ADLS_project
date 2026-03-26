@@ -61,6 +61,10 @@ class ResNet(nn.Module):
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        # nn.AdaptiveAvgPool2d instead of x.mean([2,3]) — MASE's FX graph
+        # analyser only recognises nn.Module submodules, not bare tensor
+        # method calls, so the raw .mean() call causes KeyError: 'mase'.
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.linear = nn.Linear(64 * block.expansion, num_classes)
 
     def _make_layer(
@@ -82,7 +86,8 @@ class ResNet(nn.Module):
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
-        out = out.mean(dim=[2, 3])          # global average pooling
+        out = self.avgpool(out)             # global average pooling
+        out = out.flatten(1)
         return self.linear(out)
 
 
