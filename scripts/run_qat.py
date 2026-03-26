@@ -306,8 +306,8 @@ def main() -> None:
         weight_default=quant_cfg["bit_widths"]["weight_default"],
         activation_default=quant_cfg["bit_widths"]["activation_default"],
     )
-    bit_map = allocator.allocate(sensitivity_scores)
-
+    flat_sensitivity = {k: v["grad_norm"] for k, v in sensitivity_scores.items()}
+    bit_map = allocator.allocate(flat_sensitivity)
     # ---- Build model (needed before AdaRound) ----
     num_classes = 10 if cfg["data"]["dataset"] == "cifar10" else 100
     model = build_model(cfg["model"]["architecture"], num_classes=num_classes)
