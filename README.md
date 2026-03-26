@@ -1,20 +1,22 @@
-# HA-AdaRound: Adaptive AdaRound Scheduling for Mixed-Precision Quantization
+# HA-AdaRound: Bit Refinement + Adaptive AdaRound
 
-This branch contains the adaptive AdaRound scheduling enhancement only.
+This branch contains:
+
+- Adaptive AdaRound scheduling
+- Post-allocation bit-width refinement
 
 ## What is in this branch
 
-This branch keeps the original threshold-based bit-width allocation unchanged, and adds:
+This branch improves mixed-precision robustness without changing the model architecture or requiring full retraining.
 
-- Adaptive layer-wise AdaRound step scheduling
-- Adaptive calibration effort per layer
-
-Lower-bit and more sensitive layers receive more reconstruction effort.
+The bit refinement stage upgrades a small number of highly sensitive 2-bit layers to 4-bit before AdaRound.
 
 ## Main files
 
 - `src/quantization/adaptive_scheduler.py`
+- `src/refinement/bit_refiner.py`
 - `scripts/run_enhanced_qat.py`
+- `scripts/run_refined_enhanced_qat.py`
 
 ## Run profiling
 ```bash
@@ -40,10 +42,24 @@ python scripts/run_enhanced_qat.py \
     --calib-batches 1
 ```
 
+## Run refined + adaptive AdaRound
+```bash
+python scripts/run_refined_enhanced_qat.py \
+    --config      configs/base_config.yaml \
+    --quant       configs/quant_params.yaml \
+    --sensitivity outputs/layer_sensitivity.json \
+    --pretrained  outputs/checkpoints/checkpoint_best.pth \
+    --adaround-steps 500 \
+    --calib-batches 1 \
+    --max-rescues 3 \
+    --min-rescue-sensitivity 0.05
+```
+
 Outputs:
 
-- `outputs/quant_config_enhanced.json`
-- `outputs/checkpoints/checkpoint_adarounded_enhanced.pth`
+- `outputs/quant_config_refined_enhanced.json`
+- `outputs/bit_refinement_report.json`
+- `outputs/checkpoints/checkpoint_refined_adarounded_enhanced.pth`
 
 If executed inside a MASE/CHOP-enabled environment, the script also applies
 `quantize_transform_pass` and saves the final quantized checkpoint.
