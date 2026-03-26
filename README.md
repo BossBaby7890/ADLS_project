@@ -116,50 +116,43 @@ HA-AdaRound/
 ## Quick Start
 
 ### 1. Install dependencies
-
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Run sensitivity profiling — Stage 1 (MASE terminal)
-
-Profiles the fp32 model to produce per-layer sensitivity scores.
-
+### 2. Run **Stage 1**: **Joint Sensitivity Profiling** (MASE terminal)
+Profiles fp32 model → **grad_norm + Hessian trace + Taylor scores** (new!)
 ```bash
 python scripts/run_profiling.py \
     --config     configs/base_config.yaml \
     --quant      configs/quant_params.yaml \
     --checkpoint outputs/checkpoints/checkpoint_best.pth
 ```
+**Outputs**: `outputs/layer_sensitivity.json` (nested metrics)
 
-Outputs:
-- `outputs/layer_sensitivity.json` — module-level sensitivity scores
-
-### 3. Run AdaRound with mixed-precision allocation — Stages 2 / 2.5 / 3 (MASE terminal)
-
-Assigns bit-widths from sensitivity scores (Stage 2), runs layer-wise adaptive
-rounding over a calibration batch (Stage 2.5), generates the CHOP config and
-applies `quantize_transform_pass` to produce the final quantized model (Stage 3).
-
+### 3. Run **Stage 1.5-3.5**: **Automated Policy Search + Pruning + Quantization** (MASE terminal)
+**NEW**: Greedy/CMA-ES search finds optimal **pruning+bitwidth policy** → Taylor pruning → KD recovery → AdaRound → MASE compile → resource parsing
 ```bash
-python scripts/run_qat.py \
+# Fast test (greedy only)
+python scripts/run_search.py \
+    --config      configs/base_config.yaml \
+    --quant       configs/quant_params.yaml \
+    --sensitivity outputs/layer_sensitivity.json \
+    --pretrained  outputs/checkpoints/checkpoint_best.pth \
+    --search-strategy greedy
+
+# Full run (greedy + CMA-ES, best wins)
+python scripts/run_search.py \
     --config      configs/base_config.yaml \
     --quant       configs/quant_params.yaml \
     --sensitivity outputs/layer_sensitivity.json \
     --pretrained  outputs/checkpoints/checkpoint_best.pth
 ```
-
-**AdaRound options:**
-
-| Flag | Default | Effect |
-|---|---|---|
-| `--adaround-steps` | `500` | Optimisation steps per layer (paper: 10 000) |
-| `--calib-batches` | `1` | Calibration batches used per layer |
-| `--skip-adaround` | off | Skip to RTN rounding (faster, lower accuracy) |
-
-Outputs:
-- `outputs/quant_config.json` — CHOP quantization pass config
-- `outputs/checkpoints/checkpoint_quantized.pth` — AdaRounded + MASE-quantized weights
+**Outputs**: 
+- `outputs/best_policy.json` (winning strategy)
+- `outputs/checkpoints/checkpoint_pruned.pth`
+- `outputs/quant_config.json`
+- `outputs/resource_summary.json` (LUT/DSP estimates)
 
 ### 4. Export to ONNX — Stage 4 (MASE terminal)
 
@@ -173,9 +166,8 @@ python scripts/export_onnx.py \
     --checkpoint outputs/checkpoints/checkpoint_quantized.pth \
     --output     outputs/model_quantized.onnx
 ```
+**Output**: `outputs/model_quantized.onnx` (FPGA/TVM ready)
 
-Outputs:
-- `outputs/model_quantized.onnx` — quantized graph ready for MASE HLS / TVM
 
 ### 5. Analyse results (VS Code)
 
