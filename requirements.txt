@@ -1,35 +1,50 @@
-# =============================================================================
-# APQ-Lite — Python Dependencies
-# =============================================================================
-# Core training / modelling (MASE env must also satisfy these)
-torch>=2.1.0
-torchvision>=0.16.0
+# HA-AdaRound requirements
+# Install with: pip install -r requirements.txt
 
-# Configuration
-PyYAML>=6.0
+# ---------------------------------------------------------------
+# Core ML
+# ---------------------------------------------------------------
+torch>=2.0.0
+torchvision>=0.15.0
 
-# Experiment tracking
-tensorboard>=2.14.0
-wandb>=0.16.0               # optional; set logging.use_wandb: false to skip
+# ---------------------------------------------------------------
+# Config parsing
+# ---------------------------------------------------------------
+pyyaml>=6.0
 
-# Export & deployment
-onnx>=1.15.0
-onnxruntime>=1.16.0         # CPU inference verification
-onnxsim>=0.4.33             # optional graph simplification
+# ---------------------------------------------------------------
+# CMA-ES policy search  (new dependency)
+# ---------------------------------------------------------------
+cma>=3.3.0
 
-# Numerical / data utilities
+# ---------------------------------------------------------------
+# Numerical
+# ---------------------------------------------------------------
 numpy>=1.24.0
-scipy>=1.11.0               # used for Hessian-related analysis in notebooks
 
-# Notebook / visualisation (VS Code environment)
+# ---------------------------------------------------------------
+# ONNX export  (Stage 4)
+# ---------------------------------------------------------------
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
+# ---------------------------------------------------------------
+# Notebooks + visualisation
+# ---------------------------------------------------------------
 jupyter>=1.0.0
-ipywidgets>=8.0.0
+ipykernel>=6.0.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 pandas>=2.0.0
 
-# Code quality
-ruff>=0.1.0
-mypy>=1.6.0
-pytest>=7.4.0
+# ---------------------------------------------------------------
+# Experiment tracking  (optional — disable in base_config.yaml)
+# ---------------------------------------------------------------
+tensorboard>=2.13.0
+# wandb>=0.15.0   # uncomment if use_wandb: true in base_config.yaml
+
+# ---------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------
+pytest>=7.3.0
 pytest-cov>=4.1.0

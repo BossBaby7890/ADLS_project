@@ -2,21 +2,22 @@
 """
 scripts/run_profiling.py
 ========================
-Entry-point for **Stage 1**: Gradient Sensitivity Profiling.
+Entry-point for **Stage 1**: Joint Sensitivity Profiling (extended).
 
-Run this script from the MASE terminal environment after activating the MASE
-conda/venv to accumulate per-layer squared gradient norms and produce a
-sensitivity JSON that drives the bit-width allocator.
+Collects three metrics in a single calibration pass:
+  - Gradient norm per layer       (existing)
+  - Hutchinson Hessian trace      (new)
+  - Taylor channel scores         (new)
+
+Outputs
+-------
+    outputs/sensitivity_scores.json   — raw per-parameter gradient norms
+    outputs/layer_sensitivity.json    — full per-layer dict with all 3 metrics
 
 Usage
 -----
     python scripts/run_profiling.py --config configs/base_config.yaml \\
                                     --quant  configs/quant_params.yaml
-
-Outputs
--------
-    outputs/sensitivity_scores.json   — raw per-parameter scores
-    outputs/layer_sensitivity.json    — scores aggregated to module level
 """
 
 from __future__ import annotations
@@ -31,11 +32,10 @@ import torch
 import torch.nn as nn
 import yaml
 
-# Ensure the project root is on sys.path when run from the terminal
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.models import build_model
-from src.profiler import GradientSensitivityProfiler
+from src.profiler.sensitivity import GradientSensitivityProfiler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,17 +44,12 @@ logging.basicConfig(
 logger = logging.getLogger("run_profiling")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def load_config(path: str) -> dict:
     with open(path) as fh:
         return yaml.safe_load(fh)
 
 
 def build_dataloader(cfg: dict, split: str = "train") -> torch.utils.data.DataLoader:
-    """Build a CIFAR-10/100 calibration dataloader from config."""
     import torchvision
     import torchvision.transforms as T
 
@@ -64,7 +59,6 @@ def build_dataloader(cfg: dict, split: str = "train") -> torch.utils.data.DataLo
         T.ToTensor(),
         T.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
     ])
-
     dataset_cls = (
         torchvision.datasets.CIFAR10
         if cfg["data"]["dataset"] == "cifar10"
@@ -85,31 +79,21 @@ def build_dataloader(cfg: dict, split: str = "train") -> torch.utils.data.DataLo
     )
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="APQ-Lite — Stage 1: Sensitivity Profiling")
-    parser.add_argument("--config", default="configs/base_config.yaml")
-    parser.add_argument("--quant", default="configs/quant_params.yaml")
-    parser.add_argument(
-        "--checkpoint",
-        default=None,
-        help="Path to a pretrained fp32 checkpoint (.pth). "
-             "Overrides config value if provided.",
-    )
-    parser.add_argument("--device", default=None, help="cuda | cpu")
+    parser = argparse.ArgumentParser(description="HA-AdaRound — Stage 1: Joint Sensitivity Profiling")
+    parser.add_argument("--config",     default="configs/base_config.yaml")
+    parser.add_argument("--quant",      default="configs/quant_params.yaml")
+    parser.add_argument("--checkpoint", default=None,
+                        help="Path to pretrained fp32 checkpoint (.pth).")
+    parser.add_argument("--device",     default=None, help="cuda | cpu")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
-    quant_cfg = load_config(args.quant)
 
     torch.manual_seed(cfg["project"]["seed"])
-
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
@@ -127,12 +111,13 @@ def main() -> None:
     dataloader = build_dataloader(cfg, split="train")
 
     # ---- Profiler ----
-    loss_fn = nn.CrossEntropyLoss()
+    hutchinson_probes = cfg["profiling"].get("hutchinson_probes", 3)
     profiler = GradientSensitivityProfiler(
         model=model,
-        loss_fn=loss_fn,
+        loss_fn=nn.CrossEntropyLoss(),
         device=device,
         normalize=cfg["profiling"]["normalize_scores"],
+        hutchinson_probes=hutchinson_probes,
     )
 
     param_scores = profiler.profile(
@@ -140,24 +125,33 @@ def main() -> None:
         num_batches=cfg["profiling"]["num_batches"],
     )
 
-    # Save per-parameter scores
     out_dir = Path(cfg["project"]["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Save raw per-parameter gradient norms (backward compat)
     profiler.save(cfg["profiling"]["output_file"])
 
-    # Aggregate to module-level and save separately
-    layer_scores = GradientSensitivityProfiler.aggregate_to_layers(param_scores, model)
-    layer_out = out_dir / "layer_sensitivity.json"
-    with open(layer_out, "w") as fh:
-        json.dump(layer_scores, fh, indent=2)
-    logger.info("Layer-level sensitivity saved to %s", layer_out)
+    # Save full rich layer-level dict (grad_norm + hessian_trace + taylor_scores)
+    # This is what run_search.py and the search engine consume
+    layer_out = cfg["profiling"].get("layer_output_file", "outputs/layer_sensitivity.json")
+    profiler.save_full(layer_out, model)
 
-    # Print top-10 most sensitive layers
-    sorted_layers = sorted(layer_scores.items(), key=lambda x: x[1], reverse=True)
-    logger.info("Top-10 most sensitive layers:")
-    for name, score in sorted_layers[:10]:
-        logger.info("  %-45s  %.4f", name, score)
+    # Print top-10 most sensitive layers by grad_norm
+    full_scores = profiler.get_full_layer_scores(model)
+    sorted_layers = sorted(
+        full_scores.items(),
+        key=lambda x: x[1].get("grad_norm", 0.0),
+        reverse=True,
+    )
+    logger.info("Top-10 most sensitive layers (grad_norm):")
+    for name, scores in sorted_layers[:10]:
+        logger.info(
+            "  %-45s  grad_norm=%.4f  hessian_trace=%.4f  n_channels=%d",
+            name,
+            scores.get("grad_norm", 0.0),
+            scores.get("hessian_trace", 0.0),
+            len(scores.get("taylor_scores", [])),
+        )
 
 
 if __name__ == "__main__":

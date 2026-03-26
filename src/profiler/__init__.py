@@ -1,5 +1,3 @@
-"""src.profiler — Layer sensitivity profiling via 1st-order gradient norms."""
-
-from .sensitivity import GradientSensitivityProfiler
+from src.profiler.sensitivity import GradientSensitivityProfiler
 
 __all__ = ["GradientSensitivityProfiler"]

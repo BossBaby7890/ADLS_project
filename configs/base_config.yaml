@@ -1,12 +1,10 @@
 # =============================================================================
-# base_config.yaml — APQ-Lite Global Hyperparameters
+# base_config.yaml — HA-AdaRound Global Hyperparameters (extended)
 # =============================================================================
-# Controls training, profiling, and evaluation behaviour.
-# Override values via CLI (--config) or environment-specific YAML files.
 
 project:
-  name: "APQ-Lite"
-  version: "0.1.0"
+  name: "HA-AdaRound"
+  version: "0.2.0"
   seed: 42
   output_dir: "outputs/"
   log_dir: "outputs/logs/"
@@ -16,20 +14,20 @@ project:
 # Dataset
 # -----------------------------------------------------------------------------
 data:
-  dataset: "cifar10"           # cifar10 | cifar100 | imagenet
+  dataset: "cifar10"           # cifar10 | cifar100
   data_dir: "data/"
   num_workers: 4
   pin_memory: true
-  train_split: 0.9             # fraction of training data used for training
-  batch_size: 128              # dataloader batch size (used for AdaRound calibration)
+  train_split: 0.9
+  batch_size: 128
 
 # -----------------------------------------------------------------------------
 # Model
 # -----------------------------------------------------------------------------
 model:
-  architecture: "resnet20"     # resnet20 | mobilenetv2 | vgg11
+  architecture: "resnet20"     # resnet20 | resnet32 | resnet56
   pretrained: false
-  pretrained_path: null        # path to a .pth checkpoint, or null
+  pretrained_path: null
 
 # -----------------------------------------------------------------------------
 # Training (full-precision baseline)
@@ -37,27 +35,82 @@ model:
 training:
   epochs: 200
   batch_size: 128
-  optimizer: "sgd"             # sgd | adam | adamw
+  optimizer: "sgd"
   learning_rate: 0.1
   momentum: 0.9
   weight_decay: 1.0e-4
-  lr_scheduler: "cosine"       # step | cosine | plateau
-  lr_milestones: [100, 150]    # used when scheduler = "step"
+  lr_scheduler: "cosine"
+  lr_milestones: [100, 150]
   lr_gamma: 0.1
-  grad_clip: 5.0               # max gradient norm (0 = disabled)
-  mixed_precision: false       # AMP (fp16) during full-prec training
+  grad_clip: 5.0
+  mixed_precision: false
 
 # -----------------------------------------------------------------------------
-# Profiling  (Stage 1 — sensitivity analysis)
+# Profiling  (Stage 1 — joint sensitivity profiling)
+# Extended: now collects gradient norm + Hutchinson trace + Taylor scores
 # -----------------------------------------------------------------------------
 profiling:
-  num_batches: 50              # batches used to accumulate gradient norms
-  batch_size: 32               # can differ from training batch size
-  loss_fn: "cross_entropy"     # loss used to compute gradients for profiling
-  normalize_scores: true       # min-max normalise sensitivity scores to [0,1]
+  num_batches: 50
+  batch_size: 32
+  loss_fn: "cross_entropy"
+  normalize_scores: true
+  hutchinson_probes: 3         # Rademacher probes per batch for trace estimate
   output_file: "outputs/sensitivity_scores.json"
+  layer_output_file: "outputs/layer_sensitivity.json"
 
-# QAT removed — AdaRound handles post-quantization error correction
+# -----------------------------------------------------------------------------
+# Policy search  (Stage 1.5 — NEW)
+# -----------------------------------------------------------------------------
+search:
+  strategy: "both"             # both | greedy | cmaes
+  bops_budget_ratio: 0.35      # target BOPs as fraction of fp32 baseline
+  max_sparsity: 0.50           # max per-layer channel pruning ratio
+
+  # Accuracy proxy
+  proxy_policies: 150          # random policies for proxy training data
+  proxy_eval_batches: 5        # val batches per policy during collection
+  proxy_epochs: 50             # proxy MLP training epochs
+  proxy_cache: "outputs/proxy_data.pt"
+  proxy_weights: "outputs/proxy_weights.pt"
+
+  # CMA-ES specific
+  cmaes_generations: 150
+  cmaes_popsize: 20
+  cmaes_sigma0: 0.3
+
+# -----------------------------------------------------------------------------
+# Pruning  (Stage 2 — NEW)
+# -----------------------------------------------------------------------------
+pruning:
+  rounds: 4                    # iterative pruning rounds
+  skip_patterns:
+    - "bn"
+    - "shortcut"
+    - "downsample"
+
+# -----------------------------------------------------------------------------
+# KD Recovery  (Stage 2.2 — NEW)
+# -----------------------------------------------------------------------------
+kd_recovery:
+  epochs: 5                    # fine-tune epochs per pruning round
+  temperature: 4.0             # distillation temperature T
+  alpha: 0.9                   # KD loss weight (1.0 = pure KD)
+  learning_rate: 1.0e-3
+  momentum: 0.9
+  weight_decay: 1.0e-4
+
+# -----------------------------------------------------------------------------
+# Hardware cost model  (Stage 1.5 — NEW)
+# -----------------------------------------------------------------------------
+hardware:
+  target: "fpga"               # cpu | gpu | fpga
+
+# -----------------------------------------------------------------------------
+# AdaRound  (Stage 2.5 — existing, minor additions)
+# -----------------------------------------------------------------------------
+adaround:
+  steps: 500                   # optimisation steps per layer (paper: 10000)
+  calib_batches: 1             # calibration batches per layer
 
 # -----------------------------------------------------------------------------
 # Evaluation
@@ -65,13 +118,13 @@ profiling:
 evaluation:
   batch_size: 256
   metrics: ["top1", "top5"]
-  checkpoint_path: null        # model to evaluate
+  checkpoint_path: null
 
 # -----------------------------------------------------------------------------
-# Logging / Monitoring
+# Logging
 # -----------------------------------------------------------------------------
 logging:
-  level: "INFO"                # DEBUG | INFO | WARNING | ERROR
+  level: "INFO"
   use_tensorboard: true
   use_wandb: false
-  wandb_project: "apq-lite"
+  wandb_project: "ha-adaround"
