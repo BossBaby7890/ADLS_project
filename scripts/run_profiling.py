@@ -34,6 +34,7 @@ import yaml
 # Ensure the project root is on sys.path when run from the terminal
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.calibration import CalibrationSampleSelector
 from src.models import build_model
 from src.profiler import GradientSensitivityProfiler
 
@@ -53,8 +54,8 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(fh)
 
 
-def build_dataloader(cfg: dict, split: str = "train") -> torch.utils.data.DataLoader:
-    """Build a CIFAR-10/100 calibration dataloader from config."""
+def build_dataset(cfg: dict, split: str = "train"):
+    """Build a CIFAR-10/100 dataset from config."""
     import torchvision
     import torchvision.transforms as T
 
@@ -70,18 +71,26 @@ def build_dataloader(cfg: dict, split: str = "train") -> torch.utils.data.DataLo
         if cfg["data"]["dataset"] == "cifar10"
         else torchvision.datasets.CIFAR100
     )
-    dataset = dataset_cls(
+    return dataset_cls(
         root=cfg["data"]["data_dir"],
         train=(split == "train"),
         download=True,
         transform=transform,
     )
+
+
+def build_dataloader_from_dataset(
+    dataset,
+    batch_size: int,
+    num_workers: int,
+    pin_memory: bool,
+) -> torch.utils.data.DataLoader:
     return torch.utils.data.DataLoader(
         dataset,
-        batch_size=cfg["profiling"]["batch_size"],
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=cfg["data"]["num_workers"],
-        pin_memory=cfg["data"]["pin_memory"],
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
 
@@ -100,6 +109,19 @@ def parse_args() -> argparse.Namespace:
              "Overrides config value if provided.",
     )
     parser.add_argument("--device", default=None, help="cuda | cpu")
+    parser.add_argument(
+        "--calib-strategy",
+        type=str,
+        default="random",
+        choices=["random", "class_balanced"],
+        help="Calibration subset selection strategy for profiling.",
+    )
+    parser.add_argument(
+        "--calib-samples",
+        type=int,
+        default=256,
+        help="Number of samples to use in the profiling calibration subset.",
+    )
     return parser.parse_args()
 
 
@@ -113,6 +135,11 @@ def main() -> None:
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
+    logger.info(
+        "Profiling calibration selection | strategy=%s | samples=%d",
+        args.calib_strategy,
+        args.calib_samples,
+    ) 
     # ---- Model ----
     num_classes = 10 if cfg["data"]["dataset"] == "cifar10" else 100
     model = build_model(cfg["model"]["architecture"], num_classes=num_classes)
@@ -124,7 +151,21 @@ def main() -> None:
         logger.info("Loaded weights from %s", checkpoint_path)
 
     # ---- Dataloader ----
-    dataloader = build_dataloader(cfg, split="train")
+    # ---- Calibration dataset + selector ----
+    train_dataset = build_dataset(cfg, split="train")
+    selector = CalibrationSampleSelector(
+        strategy=args.calib_strategy,
+        num_samples=args.calib_samples,
+        seed=cfg["project"]["seed"],
+    )
+    calib_dataset = selector.select(train_dataset)
+
+    dataloader = build_dataloader_from_dataset(
+        calib_dataset,
+        batch_size=cfg["profiling"]["batch_size"],
+        num_workers=cfg["data"]["num_workers"],
+        pin_memory=cfg["data"]["pin_memory"],
+    )
 
     # ---- Profiler ----
     loss_fn = nn.CrossEntropyLoss()
