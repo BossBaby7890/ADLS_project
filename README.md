@@ -203,6 +203,17 @@ python scripts/export_onnx.py \
 Outputs:
 - `outputs/model_quantized.onnx` — quantized graph ready for MASE HLS / TVM
 
+### Post-Calibration Repair Stage
+We added a post-calibration selective precision repair stage (`scripts/run_repair.py`) that operates after sensitivity-based allocation and AdaRound refinement.
+
+The repair stage:
+- loads the generated mixed-precision quantization config,
+- identifies low-precision layers eligible for one-step upgrades (2→4, 4→8),
+- evaluates upgrades under a fixed bit-cost budget,
+- applies only beneficial upgrades measured by validation loss reduction per added bit-cost.
+
+If no beneficial upgrades are found, the stage exits safely without modifying the configuration. This behavior was observed in highly degraded quantized checkpoints, where local bitwidth repair was insufficient to recover accuracy.
+
 ### 5. Analyse results (VS Code)
 
 Open `notebooks/Results_Visualization.ipynb` to compare baseline vs. quantized
