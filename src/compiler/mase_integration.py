@@ -128,13 +128,19 @@ class MaseConfigGenerator:
             a_frac = self._frac_bits(a_bits, layer_name, "activation")
 
             layer_config: ChopLayerConfig = {
+                # "name" tells MASE which quantizer kernel to use.
+                # "integer" = fixed-point integer arithmetic (required field).
+                "name": "integer",
                 self.weight_width_key: w_bits,
                 self.weight_frac_key: w_frac,
                 self.activation_width_key: a_bits,
                 self.activation_frac_key: a_frac,
-                # data_out mirrors data_in (standard assumption)
-                "data_out_width": a_bits,
-                "data_out_frac_width": a_frac,
+                # bias uses the same total width as weights
+                "bias_width": w_bits,
+                "bias_frac_width": w_frac,
+                # data_out_width / data_out_frac_width are intentionally
+                # omitted — MASE infers output format from data_in and
+                # raises KeyError: 'data_out_entries' if they are provided.
             }
 
             # Merge any per-layer overrides last
@@ -189,12 +195,19 @@ class MaseConfigGenerator:
     ) -> Dict[str, Any]:
         """Wrap the flat config in the top-level dict expected by MASE passes.
 
-        MASE transform passes typically expect::
+        MASE's ``quantize_transform_pass`` calls ``get_config(config, name)``
+        which does ``config[name]["config"]``.  Each entry — including the
+        fallback ``"default"`` — must therefore be nested one level deeper
+        under a ``"config"`` sub-key::
 
             {
                 "by": "name",
-                "default": {...},
-                "<layer_name>": {...},
+                "default": {
+                    "config": {"weight_width": 8, ...}
+                },
+                "<layer_name>": {
+                    "config": {"weight_width": 4, ...}
+                },
             }
 
         Parameters
@@ -212,15 +225,14 @@ class MaseConfigGenerator:
         mase_pass_config: Dict[str, Any] = {
             "by": "name",
             "default": {
-                self.weight_width_key: 8,
-                self.weight_frac_key: 6,
-                self.activation_width_key: 8,
-                self.activation_frac_key: 6,
-                "data_out_width": 8,
-                "data_out_frac_width": 6,
+                # name=None tells MASE to leave unmatched layers unquantized
+                "config": {"name": None}
             },
         }
-        mase_pass_config.update(chop_config)
+        # Nest every per-layer entry under "config" to match MASE schema
+        for layer_name, layer_cfg in chop_config.items():
+            mase_pass_config[layer_name] = {"config": layer_cfg}
+
         logger.debug("Wrapped config for MASE pass '%s'.", pass_name)
         return mase_pass_config
 

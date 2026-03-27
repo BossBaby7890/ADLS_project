@@ -145,6 +145,11 @@ def main() -> None:
     # (integer operators, scale/zero-point metadata) is only restored by
     # re-applying quantize_transform_pass with the same config used in Stage 3.
     from chop.passes.graph.transforms import quantize_transform_pass
+    from chop.passes.graph.analysis import (
+        init_metadata_analysis_pass,
+        add_common_metadata_analysis_pass,
+        add_software_metadata_analysis_pass,
+    )
     from chop import MaseGraph
 
     mk = quant_cfg["mase_keys"]
@@ -163,7 +168,15 @@ def main() -> None:
     mase_pass_config = generator.wrap_for_mase_pass(chop_config)
     logger.info("Loaded CHOP quant config from %s", quant_config_path)
 
+    # The analysis passes MUST run before quantize_transform_pass.
+    # They populate node.meta["mase"] with op-type, shape, and software
+    # metadata that quantize_transform_pass reads on every node.
+    dummy_in = {"x": torch.randn(1, 3, 32, 32, device=device)}
+
     mg = MaseGraph(model)
+    mg, _ = init_metadata_analysis_pass(mg)
+    mg, _ = add_common_metadata_analysis_pass(mg, pass_args={"dummy_in": dummy_in})
+    mg, _ = add_software_metadata_analysis_pass(mg, pass_args={})
     mg, _ = quantize_transform_pass(mg, mase_pass_config)
     model = mg.model
     model.eval()

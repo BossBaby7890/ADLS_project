@@ -95,6 +95,7 @@ HA-AdaRound/
 ├── scripts/                    # Run from MASE terminal
 │   ├── run_profiling.py        # Stage 1 entry-point
 │   ├── run_qat.py              # Stage 2 + 2.5 + 3 entry-point
+│   ├── run_eval.py             # Evaluation — fp32 baseline vs. quantized
 │   └── export_onnx.py          # Stage 4 — ONNX export entry-point
 │
 ├── notebooks/
@@ -163,6 +164,7 @@ Outputs:
 - `outputs/quant_config.json` — CHOP quantization pass config
 - `outputs/checkpoints/checkpoint_quantized.pth` — AdaRounded + MASE-quantized weights
 
+<<<<<<< HEAD
 ### 3b. Run adaptive AdaRound scheduling (enhanced Stage 2.5 / 2.6)
 
 This variant keeps the original bit-width allocation stage unchanged, but allocates
@@ -200,6 +202,43 @@ python scripts/run_refined_enhanced_qat.py \
     --min-rescue-sensitivity 0.05
 
 ### 4. Export to ONNX — Stage 4 (MASE terminal)
+=======
+### 4. Evaluate — fp32 Baseline vs. Quantized (MASE terminal)
+
+Runs the `Evaluator` against both checkpoints and writes JSON files consumed
+by `notebooks/Results_Visualization.ipynb`.
+
+```bash
+python scripts/run_eval.py \
+    --config     configs/base_config.yaml \
+    --quant      configs/quant_params.yaml \
+    --baseline   outputs/checkpoints/checkpoint_best.pth \
+    --quantized  outputs/checkpoints/checkpoint_quantized.pth
+```
+
+**Options:**
+
+| Flag | Effect |
+|---|---|
+| `--skip-baseline` | Only evaluate the quantized model |
+| `--skip-quantized` | Only evaluate the fp32 baseline |
+| `--benchmark-latency` | Add per-sample latency measurement to results |
+
+Outputs:
+- `outputs/eval_baseline.json` — fp32 top-1/5 accuracy + throughput
+- `outputs/eval_quantized.json` — quantized top-1/5 accuracy + throughput
+
+### 5. Export to ONNX — Stage 4 (MASE terminal)
+### Post-Calibration Repair Stage
+We added a post-calibration selective precision repair stage (`scripts/run_repair.py`) that operates after sensitivity-based allocation and AdaRound refinement.
+
+The repair stage:
+- loads the generated mixed-precision quantization config,
+- identifies low-precision layers eligible for one-step upgrades (2→4, 4→8),
+- evaluates upgrades under a fixed bit-cost budget,
+- applies only beneficial upgrades measured by validation loss reduction per added bit-cost.
+
+If no beneficial upgrades are found, the stage exits safely without modifying the configuration. This behavior was observed in highly degraded quantized checkpoints, where local bitwidth repair was insufficient to recover accuracy.
 
 Reloads the quantized checkpoint, re-applies the CHOP pass to restore the
 quantized graph structure, then exports to ONNX.
