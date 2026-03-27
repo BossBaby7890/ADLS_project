@@ -405,6 +405,12 @@ def main() -> None:
     # Dummy input used by add_common_metadata_analysis_pass to trace shapes
     dummy_input = {"x": torch.randn(1, 3, 32, 32, device=device)}
 
+    # Snapshot fp32 state dict BEFORE the MASE pass rebuilds the graph.
+    # quantize_transform_pass creates new module instances for quantized ops,
+    # which resets BatchNorm running statistics to defaults (mean=0, var=1,
+    # gamma=1, beta=0).  We restore them from this snapshot after the pass.
+    fp32_state = {k: v.clone() for k, v in model.state_dict().items()}
+
     mg = MaseGraph(model)
     mg, _ = init_metadata_analysis_pass(mg)
     mg, _ = add_common_metadata_analysis_pass(mg, pass_args={"dummy_in": dummy_input})
@@ -414,12 +420,29 @@ def main() -> None:
     logger.info("CHOP quantize_transform_pass applied.")
 
     # ---- Save quantized checkpoint for export ----
-    # Writes the state dict of the MASE-quantized model so that
-    # export_onnx.py can load it and re-apply the CHOP pass before exporting.
+    # Merge: keep AdaRounded conv/linear weights from the quantized model,
+    # but restore all BN parameters (running_mean, running_var, gamma, beta,
+    # num_batches_tracked) from the fp32 snapshot — AdaRound must not affect
+    # these values.
+    quant_sd = model.state_dict()
+    bn_keys = [
+        k for k in fp32_state
+        if any(tag in k for tag in (
+            "running_mean", "running_var", "num_batches_tracked",
+        ))
+        or (any(tag in k for tag in ("bn",)) and k.endswith((".weight", ".bias")))
+    ]
+    restored = 0
+    for key in bn_keys:
+        if key in quant_sd:
+            quant_sd[key] = fp32_state[key]
+            restored += 1
+    logger.info("Restored %d BN parameter tensors from fp32 model into quantized checkpoint.", restored)
+
     ckpt_dir = Path(cfg["project"]["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = ckpt_dir / "checkpoint_quantized.pth"
-    torch.save({"model_state_dict": model.state_dict()}, ckpt_path)
+    torch.save({"model_state_dict": quant_sd}, ckpt_path)
     logger.info("Quantized checkpoint saved → %s", ckpt_path)
 
 
